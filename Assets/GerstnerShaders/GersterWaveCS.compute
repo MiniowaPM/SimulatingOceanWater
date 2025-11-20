@@ -1,0 +1,108 @@
+// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel GerstnerWaveKernel
+
+#define PI 3.14159265359
+
+static const float G = 9.8f;
+
+struct VertexData
+{
+    float3 position;
+    float3 normal;
+};
+
+RWStructuredBuffer<VertexData> VertexInputBuffer;
+RWStructuredBuffer<VertexData> VertexOutputBuffer;
+
+float Time;
+int VertexCount;
+
+struct WaveType
+{
+    float A;
+    float Q;
+    float lambda;
+    float fi;
+    float2 D;
+};
+// Buffer containing parameters of N waves (D_x, D_z, A, lambda, Q, fi) 
+StructuredBuffer<WaveType> WaveBuffer;
+
+void GerstnerWave(in WaveType wave, float3 pos, float time, out float3 newPos, out float3 dDeltaPD_x, out float3 dDeltaPD_z)
+{
+    // Wave directions
+    float D_x = wave.D.x;
+    float D_z = wave.D.y;
+    // Wave amplitude
+    float A = wave.A;
+    // Wave length
+    float lambda = wave.lambda;
+    // Wave steepness
+    float Q = wave.Q;
+    // Wave phase offset
+    float fi = wave.fi;
+    // Wave number
+    float k = 2 * PI / lambda;
+    // Angular frequency
+    float omega = sqrt(G * k);
+    // Wave phase
+    float theta = k * (D_x * pos.x + D_z * pos.z) - omega * time + fi;
+    
+    float sin_theta = sin(theta);
+    float cos_theta = cos(theta);
+    // Calculation of new vector position
+    newPos.x = Q * A * D_x * sin_theta;
+    newPos.y = A * cos_theta;
+    newPos.z = Q * A * D_z * sin_theta;
+    // Calculation of new vector normal (new Position derivatives for D_x and D_z)
+    dDeltaPD_x.x = -Q * k * A * D_x * D_x * cos_theta;
+    dDeltaPD_x.y = -k * A * D_x * sin_theta;
+    dDeltaPD_x.z = -Q * k * A * D_z * D_x * cos_theta;
+        
+    dDeltaPD_z.x = -Q * k * A * D_x * D_z * cos_theta;
+    dDeltaPD_z.y = -k * A * D_z * sin_theta;
+    dDeltaPD_z.z = -Q * k * A * D_z * D_z * cos_theta;
+};
+
+[numthreads(64,1,1)]
+void GerstnerWaveKernel(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= (uint) VertexCount)
+        return;
+    
+    float3 originalPos = VertexInputBuffer[id.x].position;
+    float3 finalPos = originalPos;
+    float3 finalNormal;
+    
+    float3 totalDisplacement = float3(0, 0, 0);
+    float3 total_dDeltaPD_x = float3(0, 0, 0);
+    float3 total_dDeltaPD_z = float3(0, 0, 0);
+    
+    for (int i = 0; i < 4; i++)
+    {
+        float3 wavePosOffset;
+        float3 waveNormal;
+        
+        float3 dDeltaPD_x_i;
+        float3 dDeltaPD_z_i;
+        
+        GerstnerWave(WaveBuffer[i], originalPos, Time, wavePosOffset, dDeltaPD_x_i, dDeltaPD_z_i);
+        totalDisplacement += wavePosOffset;
+        
+        total_dDeltaPD_x += dDeltaPD_x_i;
+        total_dDeltaPD_z += dDeltaPD_z_i;
+        
+    }
+    
+    finalPos.x -= totalDisplacement.x;
+    finalPos.y += totalDisplacement.y;
+    finalPos.z -= totalDisplacement.z;
+    
+    float3 final_dDeltaPD_x = float3(1, 0, 0) + total_dDeltaPD_x;
+    float3 final_dDeltaPD_z = float3(0, 0, 1) + total_dDeltaPD_z;
+    
+    finalNormal = cross(final_dDeltaPD_x, final_dDeltaPD_z);
+    
+    VertexOutputBuffer[id.x].position = finalPos;
+    VertexOutputBuffer[id.x].normal = normalize(finalNormal);
+}
